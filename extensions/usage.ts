@@ -115,12 +115,12 @@ function buildStatusSummary(state: ViewState): { text?: string; level: "dim" | "
   }
 
   if (!state.snapshot && state.error) {
-    return { text: `usage unavailable: ${state.error}`, level: "warning" };
+    return { text: `Usage unavailable: ${state.error}`, level: "warning" };
   }
 
   const text =
     state.snapshot!.windows
-      .map((window) => `${window.label} ${window.usedPercent}% used/${formatDuration(secondsUntilReset(window))}`)
+      .map((window) => `${window.label} ${window.usedPercent}%/${formatDuration(secondsUntilReset(window))}`)
       .join(" • ") || "unavailable";
   if (state.stale) {
     return { text: `${text} (stale)`, level: "warning" };
@@ -146,7 +146,7 @@ async function readAuth(): Promise<AuthEntry> {
   const auth = parsed[AUTH_PROVIDER];
 
   if (!auth?.access) {
-    throw new Error(`No ${AUTH_PROVIDER} login found in ${getAuthPath()}. Run /login and choose Codex.`);
+    throw new Error(`No login found in ${getAuthPath()}. Run /login.`);
   }
 
   return auth;
@@ -167,7 +167,7 @@ async function fetchUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
 
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
-      throw new Error(`Auth expired (${response.status}). Run /login and re-authenticate Codex.`);
+      throw new Error(`Auth expired (${response.status}). Run /login and re-authenticate.`);
     }
     throw new Error(`Usage endpoint returned ${response.status} ${response.statusText}`.trim());
   }
@@ -299,7 +299,7 @@ export default function usageExtension(pi: ExtensionAPI): void {
   }
 
   pi.registerCommand("usage", {
-    description: "Refresh Codex usage",
+    description: "Refresh usage",
     handler: async (_args, ctx) => {
       currentContext = ctx;
       await refresh(ctx, { force: true });
