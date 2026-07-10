@@ -7,7 +7,7 @@ const STATUS_KEY = "usage";
 const AUTH_PROVIDER = "openai-codex";
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const FETCH_TIMEOUT_MS = 15_000;
-const LIVE_REFRESH_INTERVAL_MS = 60_000;
+const COUNTDOWN_RENDER_INTERVAL_MS = 60_000;
 const ERROR_RETRY_COOLDOWN_MS = 2 * 60_000;
 
 interface AuthEntry {
@@ -50,6 +50,7 @@ interface ViewState {
 
 interface RefreshOptions {
   force?: boolean;
+  minRevision?: number;
 }
 
 function getAuthPath(): string {
@@ -69,8 +70,8 @@ function formatDuration(seconds: number): string {
   const hours = Math.floor((total % 86_400) / 3_600);
   const minutes = Math.floor((total % 3_600) / 60);
 
-  if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
-  if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  if (days > 0) return hours > 0 ? `${days}d${hours}h` : `${days}d`;
+  if (hours > 0) return minutes > 0 ? `${hours}h${minutes}m` : `${hours}h`;
   return `${Math.max(1, minutes)}m`;
 }
 
@@ -120,7 +121,7 @@ function buildStatusSummary(state: ViewState): { text?: string; level: "dim" | "
 
   const text =
     state.snapshot!.windows
-      .map((window) => `${window.label} ${window.usedPercent}%/${formatDuration(secondsUntilReset(window))}`)
+      .map((window) => `${window.usedPercent}%/${formatDuration(secondsUntilReset(window))} (${window.label})`)
       .join(" • ") || "unavailable";
   if (state.stale) {
     return { text: `${text} (stale)`, level: "warning" };
@@ -197,30 +198,10 @@ export default function usageExtension(pi: ExtensionAPI): void {
   let currentContext: ExtensionContext | null = null;
   let refreshPromise: Promise<void> | null = null;
   let refreshController: AbortController | null = null;
-  let liveTimer: ReturnType<typeof setInterval> | null = null;
-
-  function stopLiveTimer(): void {
-    if (liveTimer) {
-      clearInterval(liveTimer);
-      liveTimer = null;
-    }
-  }
-
-  function startLiveTimer(ctx: ExtensionContext): void {
-    if (!active || !ctx.hasUI || liveTimer) return;
-
-    liveTimer = setInterval(() => {
-      if (!active || !currentContext) {
-        stopLiveTimer();
-        return;
-      }
-      renderStatus(currentContext, state);
-      refreshInBackground(currentContext);
-    }, LIVE_REFRESH_INTERVAL_MS);
-    if (typeof liveTimer === "object" && "unref" in liveTimer && typeof liveTimer.unref === "function") {
-      liveTimer.unref();
-    }
-  }
+  let countdownTimer: ReturnType<typeof setInterval> | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let usageRevision = 0;
+  let refreshedRevision = 0;
 
   function applyUI(ctx: ExtensionContext): void {
     if (!active) return;
@@ -228,23 +209,77 @@ export default function usageExtension(pi: ExtensionAPI): void {
     renderStatus(ctx, state);
   }
 
+  function stopCountdownTimer(): void {
+    if (!countdownTimer) return;
+    clearInterval(countdownTimer);
+    countdownTimer = null;
+  }
+
+  function startCountdownTimer(): void {
+    if (countdownTimer) return;
+
+    countdownTimer = setInterval(() => {
+      if (!active || !currentContext) {
+        stopCountdownTimer();
+        return;
+      }
+
+      applyUI(currentContext);
+      if (state.snapshot?.windows.some((window) => secondsUntilReset(window) === 0)) {
+        refreshInBackground(currentContext);
+      }
+    }, COUNTDOWN_RENDER_INTERVAL_MS);
+    countdownTimer.unref?.();
+  }
+
+  function stopRetryTimer(): void {
+    if (!retryTimer) return;
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+
+  function scheduleRetry(): void {
+    if (!active || !currentContext || retryTimer) return;
+
+    const delay = Math.max(0, state.lastAttemptAt + ERROR_RETRY_COOLDOWN_MS - Date.now());
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (!active || !currentContext) return;
+      refreshInBackground(currentContext);
+    }, delay);
+    retryTimer.unref?.();
+  }
+
   async function refresh(ctx: ExtensionContext, options: RefreshOptions = {}): Promise<void> {
     if (!active) return;
 
     currentContext = ctx;
 
-    if (refreshPromise) {
-      await refreshPromise;
+    if (!options.force && options.minRevision !== undefined && refreshedRevision >= options.minRevision) {
+      applyUI(ctx);
       return;
+    }
+
+    while (refreshPromise) {
+      await refreshPromise;
+      if (
+        !active ||
+        options.minRevision === undefined ||
+        refreshedRevision >= options.minRevision
+      ) {
+        return;
+      }
     }
 
     if (!options.force && state.error !== undefined && Date.now() - state.lastAttemptAt < ERROR_RETRY_COOLDOWN_MS) {
       applyUI(ctx);
+      scheduleRetry();
       return;
     }
 
     const controller = new AbortController();
     const refreshGeneration = generation;
+    const targetRevision = usageRevision;
     const runId = ++refreshRunId;
     refreshController = controller;
 
@@ -257,6 +292,7 @@ export default function usageExtension(pi: ExtensionAPI): void {
         applyUI(ctx);
 
         let nextState: ViewState;
+        let succeeded = false;
         try {
           nextState = {
             snapshot: await fetchUsage(controller.signal),
@@ -264,6 +300,7 @@ export default function usageExtension(pi: ExtensionAPI): void {
             error: undefined,
             lastAttemptAt: Date.now(),
           };
+          succeeded = true;
         } catch (error) {
           nextState = {
             ...state,
@@ -276,6 +313,12 @@ export default function usageExtension(pi: ExtensionAPI): void {
         if (!active || !currentContext || refreshGeneration !== generation) return;
 
         state = nextState;
+        if (succeeded) {
+          refreshedRevision = Math.max(refreshedRevision, targetRevision);
+          stopRetryTimer();
+        } else {
+          scheduleRetry();
+        }
         applyUI(currentContext);
       } finally {
         if (refreshRunId === runId) refreshPromise = null;
@@ -312,14 +355,22 @@ export default function usageExtension(pi: ExtensionAPI): void {
     currentContext = ctx;
     if (!ctx.hasUI) return;
     applyUI(ctx);
-    startLiveTimer(ctx);
+    startCountdownTimer();
     refreshInBackground(ctx, { force: true });
   });
 
-  pi.on("agent_end", (_event, ctx) => {
+  pi.on("turn_end", (_event, ctx) => {
+    if (!ctx.hasUI) return;
+
+    currentContext = ctx;
+    usageRevision++;
+    refreshInBackground(ctx, { minRevision: usageRevision });
+  });
+
+  pi.on("agent_settled", (_event, ctx) => {
     if (!ctx.hasUI) return;
     currentContext = ctx;
-    refreshInBackground(ctx);
+    refreshInBackground(ctx, { minRevision: usageRevision });
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
@@ -330,7 +381,10 @@ export default function usageExtension(pi: ExtensionAPI): void {
     refreshPromise = null;
     refreshController?.abort();
     refreshController = null;
-    stopLiveTimer();
+    stopCountdownTimer();
+    stopRetryTimer();
+    usageRevision = 0;
+    refreshedRevision = 0;
     if (ctx.hasUI) {
       ctx.ui.setStatus(STATUS_KEY, undefined);
     }
