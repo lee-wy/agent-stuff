@@ -9,7 +9,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Markdown, type MarkdownTheme } from "@earendil-works/pi-tui";
+import { Markdown, type MarkdownTheme, stripTerminalSequences } from "@earendil-works/pi-tui";
 
 /**
  * Send a desktop notification via OSC 777 escape sequence.
@@ -69,7 +69,14 @@ const simpleMarkdown = (text: string, width = 80): string => {
 
 const formatNotification = (text: string | null): { title: string; body: string } => {
 	const simplified = text ? simpleMarkdown(text) : "";
-	const normalized = simplified.replace(/\s+/g, " ").trim();
+	// Markdown emits OSC 8 hyperlinks. Embedding one OSC sequence inside the OSC
+	// 777 notification terminates the notification early and prints its visible
+	// text at the terminal cursor. Remove terminal sequences and remaining control
+	// characters before constructing the outer OSC sequence.
+	const normalized = stripTerminalSequences(simplified)
+		.replace(/[\x00-\x1f\x7f-\x9f]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
 	if (!normalized) {
 		return { title: "Ready for input", body: "" };
 	}

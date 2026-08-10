@@ -4,6 +4,8 @@ All notable changes to agent-stuff are documented here.
 
 ## Unreleased
 
+* Fixed the notify extension leaking OSC 8 hyperlink text into fullscreen prompt editors.
+
 ## 1.6.0
 
 * Added a redesigned `btw` extension with side chat markdown rendering, tool visibility, deferred session creation, and main-context improvements.

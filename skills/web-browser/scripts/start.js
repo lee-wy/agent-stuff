@@ -132,10 +132,13 @@ if (await isDebugEndpointUp()) {
     runningState.port === DEBUG_PORT
   ) {
     const runningHeadless = runningState.headless === true;
+    const runningExtensionsDisabled =
+      runningState.extensionsDisabled === true;
     if (
       runningState.mode === mode &&
       runningState.userDataDir === userDataDir &&
-      runningHeadless === headless
+      runningHeadless === headless &&
+      runningExtensionsDisabled === headless
     ) {
       console.log(
         `✓ Chrome already running on :${DEBUG_PORT} (${headless ? "headless" : "headed"}, ${mode} profile)`,
@@ -217,7 +220,10 @@ const chromeArgs = [
 ];
 
 if (headless) {
-  chromeArgs.push("--headless");
+  // Profile copies may contain extensions that depend on headed-only native
+  // integrations. Keep their data in the copy, but do not load them in
+  // headless automation.
+  chromeArgs.push("--headless", "--disable-extensions");
 }
 
 const chromeProc = spawn(chromeBinary, chromeArgs, {
@@ -245,6 +251,7 @@ writeState({
   pid: chromeProc.pid,
   mode,
   headless,
+  extensionsDisabled: headless,
   userDataDir,
   port: DEBUG_PORT,
   startedAt: new Date().toISOString(),
