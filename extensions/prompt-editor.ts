@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CustomEditor, ModelSelectorComponent, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";
@@ -956,7 +957,7 @@ class PromptEditor extends CustomEditor {
 		theme: ConstructorParameters<typeof CustomEditor>[1],
 		keybindings: ConstructorParameters<typeof CustomEditor>[2],
 	) {
-		super(tui, theme, keybindings);
+		super(tui, theme, keybindings, { embedWorkingStatus: true });
 		delete (this as { borderColor?: (text: string) => string }).borderColor;
 		Object.defineProperty(this, "borderColor", {
 			get: () => this._borderColor ?? ((text: string) => text),
@@ -975,67 +976,59 @@ class PromptEditor extends CustomEditor {
 
 	render(width: number): string[] {
 		const lines = super.render(width);
+		const topBorder = lines[0] ?? "";
 		const mode = this.modeLabelProvider?.();
 		if (!mode) return lines;
 
 		const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
-		const topPlain = stripAnsi(lines[0] ?? "");
+		const topPlain = stripAnsi(topBorder);
+		const isBashMode = this.getText().trimStart().startsWith("!");
 
-		// If the editor is scrolled, the built-in editor renders a scroll indicator on the top border.
-		// Preserve it, but still show the mode label.
-		const scrollPrefixMatch = topPlain.match(/^(─── ↑ \d+ more )/);
-		const prefix = scrollPrefixMatch?.[1] ?? "──";
+		// Preserve everything the built-in editor placed before the trailing border,
+		// including the embedded working spinner and any scroll indicator. An idle
+		// bash editor keeps the same two-cell border prefix before its label.
+		const trailingBorderStart = topPlain.search(/─+$/);
+		const semanticPrefix = trailingBorderStart > 0 ? topPlain.slice(0, trailingBorderStart) : "";
+		const prefixWidth = Math.min(width, semanticPrefix ? visibleWidth(semanticPrefix) : isBashMode ? 2 : 0);
+		let left = truncateToWidth(topBorder, prefixWidth, "");
+		let leftWidth = prefixWidth;
 
 		const labelColor = this.modeLabelColor ?? ((text: string) => this.borderColor(text));
-		const isBashMode = this.getText().trimStart().startsWith("!");
-		const labelParts: Array<{ text: string; color: (text: string) => string }> = [
-			{ text: formatModeLabel(mode), color: labelColor },
-		];
 		if (isBashMode) {
-			labelParts.push(
-				{ text: " ", color: labelColor },
-				{ text: "──", color: (text: string) => this.borderColor(text) },
-				{ text: " bash", color: labelColor },
-			);
+			const bashPrefix = semanticPrefix ? this.borderColor("── ") : labelColor(" ");
+			const bashLabel = labelColor("bash ");
+			left += bashPrefix + bashLabel;
+			leftWidth += visibleWidth(bashPrefix) + visibleWidth(bashLabel);
 		}
 
-		// Compute how much room we have for the label core (without truncating the prefix).
-		const labelLeftSpace = prefix.endsWith(" ") ? "" : " ";
-		const labelRightSpace = " ";
-		const minRightBorder = 1; // keep at least one border cell on the right
-		const maxLabelLen = Math.max(0, width - prefix.length - labelLeftSpace.length - labelRightSpace.length - minRightBorder);
-		if (maxLabelLen <= 0) return lines;
+		const modeLeftSpace = " ";
+		const modeRightSpace = " ";
+		const rightBorderWidth = 2;
+		const minGapWidth = 1;
+		const maxModeWidth = Math.max(
+			0,
+			width -
+				leftWidth -
+				visibleWidth(modeLeftSpace) -
+				visibleWidth(modeRightSpace) -
+				rightBorderWidth -
+				minGapWidth,
+		);
+		if (maxModeWidth <= 0) return lines;
 
-		let labelLen = labelParts.reduce((sum, part) => sum + part.text.length, 0);
-		if (labelLen > maxLabelLen) {
-			let remainingLen = maxLabelLen;
-			for (const part of labelParts) {
-				if (remainingLen <= 0) {
-					part.text = "";
-					continue;
-				}
-				if (part.text.length > remainingLen) {
-					part.text = part.text.slice(0, remainingLen);
-					remainingLen = 0;
-				} else {
-					remainingLen -= part.text.length;
-				}
-			}
-			labelLen = maxLabelLen;
-		}
+		const modeLabel = truncateToWidth(formatModeLabel(mode), maxModeWidth, "");
+		const modeWidth = visibleWidth(modeLabel);
+		const gapWidth =
+			width - leftWidth - visibleWidth(modeLeftSpace) - modeWidth - visibleWidth(modeRightSpace) - rightBorderWidth;
+		if (gapWidth < minGapWidth) return lines;
 
-		const labelChunkLen = labelLeftSpace.length + labelLen + labelRightSpace.length;
-		const remaining = width - prefix.length - labelChunkLen;
-		if (remaining < 0) return lines;
-
-		const right = "─".repeat(Math.max(0, remaining));
-		const coloredLabel = labelParts.map((part) => (part.text ? part.color(part.text) : "")).join("");
 		lines[0] =
-			this.borderColor(prefix) +
-			(labelLeftSpace ? labelColor(labelLeftSpace) : "") +
-			coloredLabel +
-			(labelRightSpace ? labelColor(labelRightSpace) : "") +
-			this.borderColor(right);
+			left +
+			this.borderColor("─".repeat(gapWidth)) +
+			labelColor(modeLeftSpace) +
+			labelColor(modeLabel) +
+			labelColor(modeRightSpace) +
+			this.borderColor("─".repeat(rightBorderWidth));
 		return lines;
 	}
 
