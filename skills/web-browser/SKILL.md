@@ -19,7 +19,7 @@ Minimal CDP tools for collaborative site exploration.
 
 Starts Chrome with remote debugging (default port `:9222`). **Agents should use `--headless` by default** because it is less disruptive and supports navigation, evaluation, screenshots, emulation, and logging. User extensions are disabled for headless launches; a copied profile still provides its cookies and other browser state, but extension-based features are unavailable. Headed launches continue to load extensions normally. Use headed mode only when a person needs to see or interact with the browser, such as for `pick.js`, manual authentication, or debugging a headless-specific difference.
 
-The start script only reuses a running browser when its profile and launch settings match. Close the running skill browser before switching between headless and headed mode.
+The start script only reuses a running browser when its profile and launch settings match. Stop the running skill browser before switching between headless and headed mode. Changing the debugging port does **not** isolate the profile: startup refuses to modify a profile already used on another port and preserves Chrome's profile locks.
 
 Profile behavior:
 - Default mode uses: `~/.cache/agent-web/browser/fresh-profile`
@@ -37,6 +37,23 @@ Optional debug endpoint override:
 
 ```bash
 BROWSER_DEBUG_PORT=9333 ./scripts/start.js --headless
+```
+
+## Stop Chrome
+
+```bash
+./scripts/stop.js                         # Stop skill Chrome on :9222
+BROWSER_DEBUG_PORT=9333 ./scripts/stop.js  # Stop skill Chrome on :9333
+./scripts/stop.js --all                   # Stop all skill Chrome instances
+```
+
+Works for headless and headed browsers. Only processes using the skill's cached profiles are stopped, not your regular Chrome. Shutdown preserves cookies and other cached state; it never force-kills Chrome. Stop before using `--reset-profile`.
+
+To switch to a visible browser:
+
+```bash
+./scripts/stop.js
+./scripts/start.js
 ```
 
 ## Navigate

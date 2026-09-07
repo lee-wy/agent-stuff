@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { findBrowserProcesses } from "./browser-processes.js";
 
 const DEBUG_HOST = process.env.BROWSER_DEBUG_HOST || "localhost";
 const DEBUG_PORT = Number(process.env.BROWSER_DEBUG_PORT || 9222);
@@ -114,10 +115,6 @@ function resolveChromeBinary() {
 
 ensureDir(BROWSER_ROOT);
 
-if (resetProfile) {
-  rmSync(userDataDir, { recursive: true, force: true });
-}
-
 const state = readState();
 if (state?.pid && !isProcessAlive(state.pid)) {
   clearState();
@@ -135,6 +132,7 @@ if (await isDebugEndpointUp()) {
     const runningExtensionsDisabled =
       runningState.extensionsDisabled === true;
     if (
+      !resetProfile &&
       runningState.mode === mode &&
       runningState.userDataDir === userDataDir &&
       runningHeadless === headless &&
@@ -149,7 +147,7 @@ if (await isDebugEndpointUp()) {
     console.error(
       `✗ Chrome already running on :${DEBUG_PORT} (${runningHeadless ? "headless" : "headed"}, ${runningState.mode} profile)`,
     );
-    console.error("  Close it first before switching launch or profile modes.");
+    console.error("  Run stop.js first before switching modes or resetting the profile.");
     process.exit(1);
   }
 
@@ -163,6 +161,21 @@ if (await isDebugEndpointUp()) {
   process.exit(1);
 }
 
+// A different port can still belong to the same profile. Check before any
+// reset/copy, and leave Chrome's Singleton locks intact as a final safeguard.
+const owners = findBrowserProcesses([userDataDir]);
+if (owners.length > 0) {
+  console.error(`✗ Profile is in use: ${userDataDir}`);
+  for (const owner of owners) {
+    console.error(`  PID ${owner.pid}, debugging port ${owner.port ?? "unknown"}`);
+  }
+  console.error("  Run stop.js first. Changing ports does not isolate profiles.");
+  process.exit(1);
+}
+
+if (resetProfile) {
+  rmSync(userDataDir, { recursive: true, force: true });
+}
 ensureDir(userDataDir);
 
 if (useProfile) {
@@ -187,9 +200,6 @@ if (useProfile) {
 }
 
 for (const staleFile of [
-  "SingletonCookie",
-  "SingletonLock",
-  "SingletonSocket",
   "DevToolsActivePort",
   "DevToolsActivePort.lock",
 ]) {
