@@ -3,13 +3,13 @@
  *
  * This handles pi's project_trust event before project-local resources are
  * loaded. If the current directory is inside a git checkout whose origin remote
- * points at github.com/earendil-works/* or github.com/mitsuhiko/*, trust is
+ * points at github.com/lee-wy/*, trust is
  * granted and remembered so future sessions do not prompt.
  */
 
 import type { ExtensionAPI, ProjectTrustEventResult } from "@earendil-works/pi-coding-agent";
 
-const TRUSTED_GITHUB_OWNERS = new Set(["earendil-works", "mitsuhiko"]);
+const TRUSTED_GITHUB_OWNERS = new Set(["lee-wy"]);
 const GIT_TIMEOUT_MS = 5_000;
 
 type GitHubRepo = {

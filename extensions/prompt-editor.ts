@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CustomEditor, ModelSelectorComponent, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { CustomEditor, ModelSelectorComponent } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import path from "node:path";
 import os from "node:os";
@@ -11,7 +11,7 @@ import type { Dirent } from "node:fs";
 // =============================================================================
 
 type ModeName = string;
-type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 type ModeSpec = {
 	provider?: string;
@@ -248,7 +248,7 @@ function normalizeThinkingLevel(level: unknown): ThinkingLevel | undefined {
 	if (typeof level !== "string") return undefined;
 	const v = level as ThinkingLevel;
 	// Keep the list local to avoid importing internal enums.
-	const allowed: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+	const allowed: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 	return allowed.includes(v) ? v : undefined;
 }
 
@@ -624,7 +624,7 @@ const MODE_UI_CONFIGURE = "Configure modes…";
 const MODE_UI_ADD = "Add mode…";
 const MODE_UI_BACK = "Back";
 
-const ALL_THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+const ALL_THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const THINKING_UNSET_LABEL = "(don't change)";
 
 function isDefaultModeName(name: string): boolean {
@@ -878,20 +878,24 @@ async function pickModelForModeUI(
 	ctx: ExtensionContext,
 	spec: ModeSpec,
 ): Promise<{ provider: string; modelId: string } | undefined> {
-	if (!ctx.hasUI) return undefined;
+	if (ctx.mode !== "tui") return undefined;
 
-	const settingsManager = SettingsManager.inMemory();
 	const currentModel = spec.provider && spec.modelId ? ctx.modelRegistry.find(spec.provider, spec.modelId) : ctx.model;
 
-	const scopedModels: Array<{ model: any; thinkingLevel: string }> = [];
+	// Match the method names expected by the model selector.
+	const modelRuntime = {
+		getAvailableSnapshot: () => ctx.modelRegistry.getAvailable(),
+		getModel: (provider: string, modelId: string) => ctx.modelRegistry.find(provider, modelId),
+		refresh: (options?: Parameters<typeof ctx.modelRegistry.refresh>[0]) => ctx.modelRegistry.refresh(options),
+		getError: () => ctx.modelRegistry.getError(),
+	};
 
 	return ctx.ui.custom<{ provider: string; modelId: string } | undefined>((tui, _theme, _keybindings, done) => {
 		const selector = new ModelSelectorComponent(
 			tui,
 			currentModel,
-			settingsManager,
-			ctx.modelRegistry as any,
-			scopedModels as any,
+			modelRuntime as any,
+			[],
 			(model) => done({ provider: model.provider, modelId: model.id }),
 			() => done(undefined),
 		);

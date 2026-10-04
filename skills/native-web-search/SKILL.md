@@ -7,10 +7,6 @@ description: "Trigger native web search. Use when you need quick internet resear
 
 Use this skill to run a **fast model with native web search enabled** and get a concise research summary with explicit full URLs.
 
-## Script
-
-- `search.mjs`
-
 ## Usage
 
 Run from this skill directory:
@@ -19,16 +15,15 @@ Run from this skill directory:
 node search.mjs "<what to search>" --purpose "<why you need this>"
 ```
 
-Examples:
+Example:
 
 ```bash
-node search.mjs "latest python release" --purpose "update dependency notes"
 node search.mjs "vite 7 breaking changes" --purpose "prepare migration checklist"
 ```
 
 Optional flags:
 
-- `--provider openai-codex|anthropic`
+- `--provider openai|anthropic`
 - `--model <model-id>`
 - `--timeout <ms>`
 - `--json`
@@ -41,9 +36,9 @@ The script instructs the model to:
 - include full canonical URLs (`https://...`) for each key finding
 - highlight disagreements between sources
 
-## Notes
+## Troubleshooting
 
-- No extra npm install is required.
-- If module resolution fails, set `PI_AI_MODULE_PATH` to `@earendil-works/pi-ai`'s `dist/index.js` path.
-- If OAuth helper resolution fails, set `PI_AI_OAUTH_MODULE_PATH` to `@earendil-works/pi-ai`'s `dist/oauth.js` path.
-- For OAuth providers, the script can fall back to a still-valid cached `access` token from `~/.pi/agent/auth.json`.
+Requires Pi 0.99+; no extra npm install is needed.
+
+If runtime loading fails, set `PI_CODING_AGENT_MODULE_PATH` to the installed
+`@earendil-works/pi-coding-agent/dist/index.js`.
