@@ -1,7 +1,8 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 
 const STATUS_KEY = "usage";
 const AUTH_PROVIDER = "openai-codex";
@@ -129,16 +130,90 @@ function buildStatusSummary(state: ViewState): { text?: string; level: "dim" | "
   return { text, level: "dim" };
 }
 
+function isUsageRelevant(ctx: ExtensionContext): boolean {
+  const model = ctx.model;
+  if (!model) return false;
+  if (model.provider === AUTH_PROVIDER) return true;
+
+  return model.provider === "openai" &&
+    ctx.modelRegistry.isUsingOAuth(model) &&
+    ctx.modelRegistry.getProvider(model.provider)?.auth.oauth?.isSubscription === true;
+}
+
 function renderStatus(ctx: ExtensionContext, state: ViewState): void {
   if (!ctx.hasUI) return;
 
   const summary = buildStatusSummary(state);
-  if (!summary.text) {
+  if (!summary.text || !isUsageRelevant(ctx)) {
     ctx.ui.setStatus(STATUS_KEY, undefined);
     return;
   }
 
   ctx.ui.setStatus(STATUS_KEY, ctx.ui.theme.fg(summary.level, summary.text));
+}
+
+function formatTokens(count: number): string {
+  if (count < 1_000) return `${count}`;
+  if (count < 10_000) return `${(count / 1_000).toFixed(1)}k`;
+  if (count < 1_000_000) return `${Math.round(count / 1_000)}k`;
+  if (count < 10_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+  return `${Math.round(count / 1_000_000)}M`;
+}
+
+function singleLine(text: string): string {
+  return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
+}
+
+// Stack the columns on narrow terminals rather than hiding either side.
+function renderColumns(left: string, right: string, width: number): string[] {
+  if (width <= 0) return [""];
+  if (!right) return [truncateToWidth(left, width)];
+  if (visibleWidth(left) + 2 + visibleWidth(right) <= width) {
+    return [left + " ".repeat(width - visibleWidth(left) - visibleWidth(right)) + right];
+  }
+
+  const clippedRight = truncateToWidth(right, width);
+  const rightLine = " ".repeat(Math.max(0, width - visibleWidth(clippedRight))) + clippedRight;
+  return left ? [truncateToWidth(left, width), rightLine] : [rightLine];
+}
+
+function getTokenStats(ctx: ExtensionContext): { parts: string[]; cost: number } {
+  const totals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+  let cacheHitRate: number | undefined;
+
+  // Include all entries, including pre-compaction and nested tool/summary usage,
+  // just as Pi's built-in footer does.
+  for (const entry of ctx.sessionManager.getEntries()) {
+    const usage = entry.type === "usage"
+      ? entry.usage
+      : entry.type === "message" && (entry.message.role === "assistant" || entry.message.role === "toolResult")
+        ? entry.message.usage
+        : entry.type === "compaction" || entry.type === "branch_summary"
+          ? entry.usage
+          : undefined;
+    if (!usage) continue;
+
+    totals.input += usage.input;
+    totals.output += usage.output;
+    totals.cacheRead += usage.cacheRead;
+    totals.cacheWrite += usage.cacheWrite;
+    totals.cost += usage.cost.total;
+
+    if (entry.type === "message" && entry.message.role === "assistant") {
+      const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
+      cacheHitRate = promptTokens > 0 ? (usage.cacheRead / promptTokens) * 100 : undefined;
+    }
+  }
+
+  const parts: string[] = [];
+  if (totals.input) parts.push(`↑${formatTokens(totals.input)}`);
+  if (totals.output) parts.push(`↓${formatTokens(totals.output)}`);
+  if (totals.cacheRead) parts.push(`R${formatTokens(totals.cacheRead)}`);
+  if (totals.cacheWrite) parts.push(`W${formatTokens(totals.cacheWrite)}`);
+  if ((totals.cacheRead || totals.cacheWrite) && cacheHitRate !== undefined) {
+    parts.push(`CH${cacheHitRate.toFixed(1)}%`);
+  }
+  return { parts, cost: totals.cost };
 }
 
 async function readAuth(): Promise<AuthEntry> {
@@ -202,6 +277,83 @@ export default function usageExtension(pi: ExtensionAPI): void {
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let usageRevision = 0;
   let refreshedRevision = 0;
+
+  function installFooter(initialContext: ExtensionContext): void {
+    if (initialContext.mode !== "tui") return;
+
+    initialContext.ui.setFooter((tui, theme, footerData) => {
+      const unsubscribe = footerData.onBranchChange(() => tui.requestRender());
+      let statsKey: string | undefined;
+      let tokenStats: ReturnType<typeof getTokenStats> = { parts: [], cost: 0 };
+
+      return {
+        dispose: unsubscribe,
+        invalidate() { statsKey = undefined; },
+        render(width: number): string[] {
+          const ctx = currentContext ?? initialContext;
+          const session = ctx.sessionManager;
+          const nextStatsKey = `${session.getSessionId()}:${session.getLeafId()}`;
+          if (statsKey !== nextStatsKey) {
+            tokenStats = getTokenStats(ctx);
+            statsKey = nextStatsKey;
+          }
+
+          const home = homedir();
+          const cwd = session.getCwd();
+          let directory = cwd === home ? "~" : cwd.startsWith(home + sep) ? `~${cwd.slice(home.length)}` : cwd;
+          const branch = footerData.getGitBranch();
+          if (branch) directory += ` (${branch})`;
+          const sessionName = session.getSessionName();
+          if (sessionName) directory += ` • ${sessionName}`;
+
+          const model = ctx.model;
+          let modelText = model?.id ?? "no-model";
+          if (model?.reasoning) {
+            const thinking = pi.getThinkingLevel();
+            modelText += thinking === "off" ? " • thinking off" : ` • ${thinking}`;
+          }
+          if (model && footerData.getAvailableProviderCount() > 1) {
+            const withProvider = `(${model.provider}) ${modelText}`;
+            if (visibleWidth(directory) + 2 + visibleWidth(withProvider) <= width) modelText = withProvider;
+          }
+
+          const parts = [...tokenStats.parts];
+          const subscription = model && (
+            model.provider === "kimi-coding" || (
+              ctx.modelRegistry.isUsingOAuth(model) &&
+              ctx.modelRegistry.getProvider(model.provider)?.auth.oauth?.isSubscription === true
+            )
+          );
+          if (tokenStats.cost || subscription) {
+            parts.push(`$${tokenStats.cost.toFixed(3)}${subscription ? " (sub)" : ""}`);
+          }
+          const context = ctx.getContextUsage();
+          const percent = context?.percent === null ? "?" : (context?.percent ?? 0).toFixed(1);
+          const auto = pi.getSettings().compaction?.enabled !== false ? " (auto)" : "";
+          const contextWindow = formatTokens(context?.contextWindow ?? model?.contextWindow ?? 0);
+          const contextText = `${percent}${percent === "?" ? "" : "%"}/${contextWindow}${auto}`;
+          const contextColor = (context?.percent ?? 0) > 90 ? "error" : (context?.percent ?? 0) > 70 ? "warning" : "dim";
+          const statsText = (parts.length ? theme.fg("dim", parts.join(" ") + " ") : "") + theme.fg(contextColor, contextText);
+          const summary = buildStatusSummary(state);
+          const usageText = isUsageRelevant(ctx) && summary.text
+            ? theme.fg(summary.level, singleLine(summary.text))
+            : "";
+          const lines = [
+            ...renderColumns(theme.fg("dim", singleLine(directory)), theme.fg("dim", modelText), width),
+            ...renderColumns(statsText, usageText, width),
+          ];
+
+          // Keep other extensions' statuses, but don't duplicate our usage text.
+          const statuses = [...footerData.getExtensionStatuses()]
+            .filter(([key]) => key !== STATUS_KEY)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([, text]) => singleLine(text));
+          if (statuses.length) lines.push(truncateToWidth(statuses.join(" "), Math.max(0, width)));
+          return lines;
+        },
+      };
+    });
+  }
 
   function applyUI(ctx: ExtensionContext): void {
     if (!active) return;
@@ -354,9 +506,16 @@ export default function usageExtension(pi: ExtensionAPI): void {
     generation++;
     currentContext = ctx;
     if (!ctx.hasUI) return;
+    installFooter(ctx);
     applyUI(ctx);
     startCountdownTimer();
     refreshInBackground(ctx, { force: true });
+  });
+
+  pi.on("model_select", (_event, ctx) => {
+    if (!ctx.hasUI) return;
+    currentContext = ctx;
+    applyUI(ctx);
   });
 
   pi.on("turn_end", (_event, ctx) => {
@@ -387,6 +546,7 @@ export default function usageExtension(pi: ExtensionAPI): void {
     refreshedRevision = 0;
     if (ctx.hasUI) {
       ctx.ui.setStatus(STATUS_KEY, undefined);
+      if (ctx.mode === "tui") ctx.ui.setFooter(undefined);
     }
   });
 }
