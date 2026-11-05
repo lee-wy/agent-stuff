@@ -23,10 +23,14 @@ node search.mjs "vite 7 breaking changes" --purpose "prepare migration checklist
 
 Optional flags:
 
-- `--provider openai|anthropic`
+- `--provider openai-codex|openai|anthropic`
 - `--model <model-id>`
 - `--timeout <ms>`
 - `--json`
+
+Default models: `gpt-6-luna` (OpenAI/Codex), `claude-haiku-5-5` (Anthropic).
+
+Provider selection: `--provider` → active Pi session → saved default → available credentials.
 
 ## Output expectations
 

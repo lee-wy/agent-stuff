@@ -69,11 +69,11 @@ function parseArgs(argv) {
 
 function usage() {
 	return `Usage:
-  node search.mjs "<query>" [--purpose "<why>"] [--provider openai|anthropic] [--model <id>] [--json]
+  node search.mjs "<query>" [--purpose "<why>"] [--provider openai-codex|openai|anthropic] [--model <id>] [--json]
 
 Examples:
   node search.mjs "latest python release" --purpose "update dependency notes"
-  node search.mjs "HTTP/3 browser support 2026" --provider openai
+  node search.mjs "HTTP/3 browser support 2026" --provider openai-codex
   node search.mjs "vite 7 breaking changes" --json`;
 }
 
@@ -97,22 +97,30 @@ function getAgentDir() {
 function normalizeProvider(provider) {
 	if (!provider) return undefined;
 	const p = String(provider).toLowerCase().trim();
-	if (p.includes("anthropic") || p.includes("claude")) return "anthropic";
-	if (p.includes("codex") || p === "openai" || p.startsWith("openai")) return "openai";
+	if (p === "anthropic" || p === "claude") return "anthropic";
+	if (p === "openai-codex" || p === "codex") return "openai-codex";
+	if (p === "openai") return "openai";
 	return undefined;
 }
 
-function pickProvider(argProvider, settings, auth) {
-	const forced = normalizeProvider(argProvider);
-	if (forced) return forced;
+function pickProvider(argProvider, settings, auth, env = process.env) {
+	if (argProvider !== undefined) {
+		const forced = normalizeProvider(argProvider);
+		if (!forced) throw new Error(`Unsupported provider '${argProvider}'. Use openai-codex, openai, or anthropic.`);
+		return forced;
+	}
+
+	const fromSession = normalizeProvider(env.PI_PROVIDER);
+	if (fromSession) return fromSession;
 
 	const fromSettings = normalizeProvider(settings?.defaultProvider);
 	if (fromSettings) return fromSettings;
 
-	if (auth?.openai || process.env.OPENAI_API_KEY) return "openai";
-	if (auth?.anthropic || process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_OAUTH_TOKEN) return "anthropic";
+	if (auth?.["openai-codex"]) return "openai-codex";
+	if (auth?.openai || env.OPENAI_API_KEY) return "openai";
+	if (auth?.anthropic || env.ANTHROPIC_API_KEY || env.ANTHROPIC_OAUTH_TOKEN) return "anthropic";
 
-	throw new Error("Could not determine provider. Pass --provider openai|anthropic");
+	throw new Error("Could not determine provider. Pass --provider openai-codex|openai|anthropic");
 }
 
 function findPiExecutable() {
@@ -195,9 +203,6 @@ async function loadPiRuntime(agentDir) {
 				modelsPath: join(agentDir, "models.json"),
 				refreshOnCreate: false,
 			});
-			if (!runtime.getProvider("openai")?.auth?.oauth) {
-				throw new Error("Pi 0.99+ with Sign in with ChatGPT is required");
-			}
 			return runtime;
 		} catch (err) {
 			tried.push(`${candidate} (${err?.code || err?.message || "failed"})`);
@@ -210,32 +215,8 @@ async function loadPiRuntime(agentDir) {
 }
 
 function pickFastModel(provider, requestedModel, runtime) {
-	const models = runtime.getModels(provider);
-	if (!Array.isArray(models) || models.length === 0) {
-		const baseUrl = runtime.getProvider(provider)?.baseUrl;
-		if (requestedModel) return { id: requestedModel, provider, baseUrl };
-		if (provider === "openai") return { id: "gpt-6-luna", provider, baseUrl: baseUrl || "https://api.openai.com/v1" };
-		return { id: "claude-haiku-4-5", provider, baseUrl: baseUrl || "https://api.anthropic.com" };
-	}
-
-	if (requestedModel) {
-		const exact = models.find((m) => m.id === requestedModel);
-		if (exact) return exact;
-		return { ...models[0], id: requestedModel };
-	}
-
-	const preferredIds =
-		provider === "openai"
-			? ["gpt-6-luna", "gpt-5.6-luna", "gpt-5.4-mini", "gpt-5.1"]
-			: ["claude-haiku-4-5", "claude-3-5-haiku-latest", "claude-3-5-haiku-20241022"];
-
-	for (const id of preferredIds) {
-		const found = models.find((m) => m.id === id);
-		if (found) return found;
-	}
-
-	const heuristic = models.find((m) => /luna|mini|haiku|flash|fast/i.test(m.id));
-	return heuristic || models[0];
+	const id = requestedModel || (provider === "anthropic" ? "claude-haiku-5-5" : "gpt-6-luna");
+	return runtime.getModel(provider, id) || { id, provider, baseUrl: runtime.getProvider(provider)?.baseUrl };
 }
 
 function buildUserPrompt(query, purpose) {
@@ -244,6 +225,38 @@ function buildUserPrompt(query, purpose) {
 
 function buildSystemPrompt() {
 	return "You are a fast web research assistant. Always produce practical summaries and include full source URLs (no shortened links).";
+}
+
+function decodeJwtAccountId(token) {
+	try {
+		const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"));
+		const accountId = payload?.["https://api.openai.com/auth"]?.chatgpt_account_id;
+		return typeof accountId === "string" && accountId ? accountId : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function resolveCodexUrl(baseUrl = "https://chatgpt.com/backend-api") {
+	const normalized = String(baseUrl || "https://chatgpt.com/backend-api").replace(/\/+$/, "");
+	if (normalized.endsWith("/codex/responses")) return normalized;
+	if (normalized.endsWith("/codex")) return `${normalized}/responses`;
+	return `${normalized}/codex/responses`;
+}
+
+async function runCodexSearch(options) {
+	const accountId = decodeJwtAccountId(options.apiKey);
+	if (!accountId) throw new Error("Could not determine ChatGPT account ID for openai-codex token.");
+	const headers = new Headers(options.headers);
+	headers.set("chatgpt-account-id", accountId);
+	headers.set("OpenAI-Beta", "responses=experimental");
+	headers.set("originator", "pi-native-web-search-skill");
+	return runOpenAISearch({
+		...options,
+		endpoint: resolveCodexUrl(options.baseUrl),
+		headers: Object.fromEntries(headers),
+		label: "Codex",
+	});
 }
 
 function resolveOpenAIUrl(baseUrl = "https://api.openai.com/v1") {
@@ -263,18 +276,16 @@ function extractEventData(chunk) {
 	return payload;
 }
 
-async function runOpenAISearch({ model, apiKey, query, purpose, timeoutMs, baseUrl, headers }) {
+async function runOpenAISearch({ model, apiKey, query, purpose, timeoutMs, baseUrl, headers, endpoint = resolveOpenAIUrl(baseUrl), label = "OpenAI" }) {
 	const body = {
 		model,
 		store: false,
 		stream: true,
 		instructions: buildSystemPrompt(),
-		input: [{ role: "user", content: buildUserPrompt(query, purpose) }],
+		input: [{ role: "user", content: [{ type: "input_text", text: buildUserPrompt(query, purpose) }] }],
 		tools: [{ type: "web_search" }],
-		tool_choice: "auto",
+		tool_choice: "required",
 	};
-
-	const endpoint = resolveOpenAIUrl(baseUrl);
 	const signal = typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined;
 
 	const res = await fetch(endpoint, {
@@ -291,10 +302,10 @@ async function runOpenAISearch({ model, apiKey, query, purpose, timeoutMs, baseU
 
 	if (!res.ok) {
 		const detail = await res.text();
-		throw new Error(`OpenAI request failed (${res.status}): ${detail}`);
+		throw new Error(`${label} request failed (${res.status}): ${detail}`);
 	}
 	if (!res.body) {
-		throw new Error("OpenAI response had no body");
+		throw new Error(`${label} response had no body`);
 	}
 
 	const reader = res.body.getReader();
@@ -302,17 +313,18 @@ async function runOpenAISearch({ model, apiKey, query, purpose, timeoutMs, baseU
 	let buffer = "";
 	let text = "";
 	let fallbackText = "";
+	let searchCompleted = false;
 
 	while (true) {
 		const { done, value } = await reader.read();
 		if (done) break;
 		buffer += decoder.decode(value, { stream: true });
 
-		let idx = buffer.indexOf("\n\n");
-		while (idx !== -1) {
-			const chunk = buffer.slice(0, idx);
-			buffer = buffer.slice(idx + 2);
-			idx = buffer.indexOf("\n\n");
+		let boundary = buffer.match(/\r?\n\r?\n/);
+		while (boundary) {
+			const chunk = buffer.slice(0, boundary.index);
+			buffer = buffer.slice(boundary.index + boundary[0].length);
+			boundary = buffer.match(/\r?\n\r?\n/);
 
 			const data = extractEventData(chunk);
 			if (!data) continue;
@@ -322,6 +334,11 @@ async function runOpenAISearch({ model, apiKey, query, purpose, timeoutMs, baseU
 				event = JSON.parse(data);
 			} catch {
 				continue;
+			}
+
+			if (event.type === "response.web_search_call.completed" ||
+				(event.type === "response.output_item.done" && event.item?.type === "web_search_call" && event.item.status === "completed")) {
+				searchCompleted = true;
 			}
 
 			if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
@@ -338,19 +355,20 @@ async function runOpenAISearch({ model, apiKey, query, purpose, timeoutMs, baseU
 			}
 
 			if (event.type === "error") {
-				throw new Error(event.message || "OpenAI stream failed");
+				throw new Error(event.message || `${label} stream failed`);
 			}
 
-			if (event.type === "response.failed") {
-				throw new Error(event.response?.error?.message || "OpenAI response failed");
+			if (event.type === "response.failed" || event.type === "response.incomplete") {
+				throw new Error(event.response?.error?.message || `${label} response ${event.type.slice("response.".length)}`);
 			}
 		}
 	}
 
 	const finalText = (text || fallbackText || "").trim();
 	if (!finalText) {
-		throw new Error("OpenAI returned an empty response");
+		throw new Error(`${label} returned an empty response`);
 	}
+	if (!searchCompleted) throw new Error(`${label} did not complete a web search.`);
 	return finalText;
 }
 
@@ -380,7 +398,6 @@ async function runAnthropicSearch({ model, apiKey, query, purpose, timeoutMs, ba
 	const body = {
 		model,
 		max_tokens: 1800,
-		temperature: 0,
 		system: buildSystemPrompt(),
 		tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 5 }],
 		messages: [{ role: "user", content: buildUserPrompt(query, purpose) }],
@@ -435,6 +452,7 @@ async function main() {
 
 	const provider = pickProvider(args.provider, settings, auth);
 	const runtime = await loadPiRuntime(agentDir);
+	if (!runtime.getProvider(provider)) throw new Error(`Pi does not support provider '${provider}'. Update Pi.`);
 	const model = pickFastModel(provider, args.model, runtime);
 	const resolved = await runtime.getAuth(model, { signal: AbortSignal.timeout(args.timeoutMs) });
 	const { apiKey, baseUrl = model.baseUrl, headers: authHeaders } = resolved?.auth || {};
@@ -443,26 +461,16 @@ async function main() {
 	}
 	const headers = Object.fromEntries(Object.entries(authHeaders || {}).filter(([, value]) => value !== null));
 
-	const text =
-		provider === "openai"
-			? await runOpenAISearch({
-					model: model.id,
-					apiKey,
-					query: args.query,
-					purpose: args.purpose,
-					timeoutMs: args.timeoutMs,
-					baseUrl,
-					headers,
-			  })
-			: await runAnthropicSearch({
-					model: model.id,
-					apiKey,
-					query: args.query,
-					purpose: args.purpose,
-					timeoutMs: args.timeoutMs,
-					baseUrl,
-					headers,
-			  });
+	const search = { "openai-codex": runCodexSearch, openai: runOpenAISearch, anthropic: runAnthropicSearch }[provider];
+	const text = await search({
+		model: model.id,
+		apiKey,
+		query: args.query,
+		purpose: args.purpose,
+		timeoutMs: args.timeoutMs,
+		baseUrl,
+		headers,
+	});
 
 	if (args.json) {
 		console.log(
