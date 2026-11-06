@@ -23,8 +23,8 @@ Skills live in [`skills`](skills). Each skill has a `SKILL.md` plus any helper s
 
 - [`/anachb`](skills/anachb) - Query Austrian public transport via VOR AnachB: station search, real-time departures, routes, and disruptions.
 - [`/apple-mail`](skills/apple-mail) - Search and read Apple Mail's local storage, including raw messages and attachment extraction.
+- [`/audio-transcription`](skills/audio-transcription) - Transcribe local audio/video and Apple Voice Memos with cached MLX Whisper models.
 - [`/commit`](skills/commit) - Guidance for making concise git commits with good subjects and bodies.
-- [`/frontend-design`](skills/frontend-design) - Create distinctive, production-ready frontend UI with strong visual direction.
 - [`/ghidra`](skills/ghidra) - Run Ghidra headless analysis for binaries, functions, strings, symbols, call graphs, and decompilation.
 - [`/github`](skills/github) - Use the `gh` CLI for GitHub issues, pull requests, runs, and API queries.
 - [`/google-workspace`](skills/google-workspace) - Access Drive, Docs, Calendar, Gmail, Sheets, Slides, Chat, and People APIs through local helper scripts.
@@ -45,7 +45,8 @@ Skills live in [`skills`](skills). Each skill has a `SKILL.md` plus any helper s
 Pi extensions live in [`extensions`](extensions):
 
 - [`answer.ts`](extensions/answer.ts) - `/answer` plus `ctrl+.` to extract questions from the last assistant message and answer them in an interactive Q&A flow.
-- [`btw.ts`](extensions/btw.ts) - `/btw` side-chat popover for quick tangential questions, with thread restore/reset behavior.
+- [`ask-user.ts`](extensions/ask-user.ts) - `ask_user` tool for interactive questions with described choices or free-text answers; cancelling stops the run.
+- [`btw.ts`](extensions/btw.ts) - `/btw [question]` opens a floating Rex side chat with main-conversation context. `/btw` in the main chat offers continue, start fresh, or summary injection.
 - [`continue.ts`](extensions/continue.ts) - `shift+option+enter` sends `continue` only when the agent is stopped.
 - [`control.ts`](extensions/control.ts) - Session control sockets, `/control-sessions`, and the `send_to_session` / `list_sessions` tools for communicating with other live Pi sessions.
 - [`files.ts`](extensions/files.ts) - `/files` browser with git status and session references, plus shortcuts to browse, reveal, and Quick Look referenced files.
@@ -54,13 +55,15 @@ Pi extensions live in [`extensions`](extensions):
 - [`no-sleep.ts`](extensions/no-sleep.ts) - `/no-sleep` macOS `caffeinate` integration to prevent sleep while an agent or session is active.
 - [`notify.ts`](extensions/notify.ts) - Native terminal desktop notification when the agent finishes and is ready for input.
 - [`prompt-editor.ts`](extensions/prompt-editor.ts) - `/mode`, `ctrl+shift+m`, and `ctrl+space` prompt-mode selector with persistence and shortcuts.
-- [`review.ts`](extensions/review.ts) - `/review` and `/end-review` for reviewing uncommitted changes, branches, commits, PRs, or folder snapshots.
+- [`review.ts`](extensions/review.ts) - `/review` and `/end-review` for reviewing changes, branches, commits, PRs, or file/folder snapshots.
 - [`session-breakdown.ts`](extensions/session-breakdown.ts) - `/session-breakdown` TUI for 7/30/90-day session usage, token, model, and cost analysis.
-- [`split-fork.ts`](extensions/split-fork.ts) - `/split-fork` to branch the current session into a new Pi process in a right-hand Ghostty split.
+- [`split-fork.ts`](extensions/split-fork.ts) - `/split-fork [prompt]` branches the current session into a new Pi process in a right-hand Rex split.
 - [`subagent.ts`](extensions/subagent.ts) - Serial `subagent` tool that runs one observable Pi child at a time in tmux; attach with the printed `pi --attach-subagent …` command.
 - [`todos.ts`](extensions/todos.ts) - `/todos` TUI plus `todo` tool for file-backed tasks in `.pi/todos` or `PI_TODO_PATH`.
 - [`trust-github-repos.ts`](extensions/trust-github-repos.ts) - Automatically trusts GitHub checkouts owned by `earendil-works` or `mitsuhiko`.
+- [`usage.ts`](extensions/usage.ts) - Token/cache/cost footer and Codex subscription usage with reset countdowns; `/usage` refreshes limits.
 - [`uv.ts`](extensions/uv.ts) - Replaces the bash tool with a `uv`-aware version that injects Python command shims and blocks common non-`uv` workflows.
+- [`view-image.ts`](extensions/view-image.ts) - `view_image` tool for inspecting local images in Pi's inline viewer.
 - [`whimsical.ts`](extensions/whimsical.ts) - Replaces the default thinking/status text with random whimsical phrases.
 
 ## Themes
@@ -70,6 +73,7 @@ Custom themes live in [`themes`](themes):
 - [`dayowl.json`](themes/dayowl.json) - Light Day Owl-inspired theme.
 - [`modern-dark.json`](themes/modern-dark.json) - Dark orange/blue-gray theme.
 - [`nightowl.json`](themes/nightowl.json) - Night Owl-inspired theme.
+- [`superlogical.json`](themes/superlogical.json) - Dark theme with muted colors.
 
 ## Support Files and Utilities
 

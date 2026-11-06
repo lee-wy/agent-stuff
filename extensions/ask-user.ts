@@ -6,7 +6,6 @@ type Choice = { label: string; description?: string };
 type Selection = number | "other" | undefined;
 
 const OTHER = "Other";
-const SUBTITLE = "Choose an answer, or Other to type your own.";
 
 function escapeTerminalControls(text: string): string {
 	// Keep line feeds for layout; show other C0/C1 controls literally, before adding trusted styling.
@@ -25,7 +24,7 @@ async function selectChoice(ctx: ExtensionContext, question: string, choices: Ch
 	}));
 	if (ctx.mode !== "tui") {
 		const display = choices.map(({ label, description }) => (description ? `${label}\n    ${description}` : label));
-		const selected = await ctx.ui.select(`${question}\n\n${SUBTITLE}`, [...display, OTHER], { signal });
+		const selected = await ctx.ui.select(question, [...display, OTHER], { signal });
 		if (selected === undefined) return undefined;
 		if (selected === OTHER) return "other";
 		const index = display.indexOf(selected);
@@ -111,8 +110,6 @@ async function selectChoice(ctx: ExtensionContext, question: string, choices: Ch
 			const header = [
 				"",
 				...pad(wrapTextWithAnsi(question, inner).map((line) => theme.fg("accent", theme.bold(line)))),
-				"",
-				...pad(wrapTextWithAnsi(SUBTITLE, inner).map((line) => theme.fg("text", line))),
 				"",
 			];
 			const list = renderList(inner);
@@ -246,7 +243,7 @@ export default function (pi: ExtensionAPI) {
 				// Empty text is not an answer. Escape goes back if choices exist, otherwise cancels.
 				const escapeHint = suggested.length > 0 ? "Esc returns to the choices." : "Esc cancels.";
 				while (!signal?.aborted) {
-					const input = await ctx.ui.input(`${escapeTerminalControls(question)}\n\nType your answer. ${escapeHint}`, "Type your answer...", { signal });
+					const input = await ctx.ui.input(`${escapeTerminalControls(question)}\n\n${escapeHint}`, "Type your answer...", { signal });
 					if (signal?.aborted || input === undefined) break;
 					if (input.trim()) {
 						answer = input.trim();

@@ -28,9 +28,11 @@
  */
 
 import type { ExtensionAPI, ExtensionContext, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { DynamicBorder, BorderedLoader } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder, BorderedLoader, getAgentDir } from "@earendil-works/pi-coding-agent";
 import {
+	CombinedAutocompleteProvider,
 	Container,
+	Editor,
 	fuzzyFilter,
 	Input,
 	type SelectItem,
@@ -39,7 +41,7 @@ import {
 	Text,
 } from "@earendil-works/pi-tui";
 import path from "node:path";
-import { promises as fs } from "node:fs";
+import { existsSync, promises as fs } from "node:fs";
 
 // State to track fresh session review (where we branched from).
 // Module-level state means only one review can be active at a time.
@@ -752,7 +754,7 @@ async function buildReviewPrompt(
 		}
 
 		case "folder":
-			return FOLDER_REVIEW_PROMPT.replace("{paths}", target.paths.join(", "));
+			return FOLDER_REVIEW_PROMPT.replace("{paths}", target.paths.map((item) => JSON.stringify(item)).join(", "));
 	}
 }
 
@@ -849,7 +851,7 @@ const REVIEW_PRESETS = [
 	{ value: "baseBranch", label: "Review against a base branch", description: "(local)" },
 	{ value: "commit", label: "Review a commit", description: "" },
 	{ value: "pullRequest", label: "Review a pull request", description: "(GitHub PR)" },
-	{ value: "folder", label: "Review a folder (or more)", description: "(snapshot, not diff)" },
+	{ value: "folder", label: "Review files or folders", description: "(snapshot, not diff)" },
 ] as const;
 
 const TOGGLE_LOOP_FIXING_VALUE = "toggleLoopFixing" as const;
@@ -1346,24 +1348,103 @@ export default function reviewExtension(pi: ExtensionAPI) {
 	}
 
 
-	function parseReviewPaths(value: string): string[] {
-		return value
-			.split(/\s+/)
-			.map((item) => item.trim())
-			.filter((item) => item.length > 0);
+	function normalizeReviewPaths(paths: string[]): string[] {
+		return paths.map((item) => item.replace(/^@/, "")).filter((item) => item.length > 0);
 	}
 
 	/**
-	 * Show folder input
+	 * Show a path editor with Pi's built-in file/folder completion.
 	 */
 	async function showFolderInput(ctx: ExtensionContext): Promise<ReviewTarget | null> {
-		const result = await ctx.ui.editor(
-			"Enter folders/files to review (space-separated or one per line):",
-			".",
-		);
+		const title = "Enter files or folders to review";
+		let result: string | undefined;
+		if (ctx.mode !== "tui") {
+			result = await ctx.ui.editor(`${title} (space-separated; quote paths containing spaces):`, ".");
+		} else {
+			// Pi installs fd here; also support system installations without downloading anything.
+			const managedFd = path.join(getAgentDir(), "bin", process.platform === "win32" ? "fd.exe" : "fd");
+			let fdPath: string | undefined = existsSync(managedFd) ? managedFd : undefined;
+			if (!fdPath) {
+				for (const command of ["fd", "fdfind"]) {
+					if ((await pi.exec(command, ["--version"])).code === 0) {
+						fdPath = command;
+						break;
+					}
+				}
+			}
+
+			result = await ctx.ui.custom<string | undefined>((tui, theme, keybindings, done) => {
+				const container = new Container();
+				container.addChild(new Text(theme.fg("accent", theme.bold(title)), 0, 0));
+				const editor = new Editor(tui, {
+					borderColor: (text) => theme.fg("accent", text),
+					selectList: {
+						selectedPrefix: (text) => theme.fg("accent", text),
+						selectedText: (text) => theme.fg("accent", text),
+						description: (text) => theme.fg("muted", text),
+						scrollInfo: (text) => theme.fg("dim", text),
+						noMatch: (text) => theme.fg("warning", text),
+					},
+				});
+				const provider = new CombinedAutocompleteProvider([], ctx.cwd, fdPath);
+				editor.setAutocompleteProvider({
+					// This dialog contains only paths, never slash commands.
+					getSuggestions: (lines, line, col, options) =>
+						provider.getSuggestions(lines, line, col, { ...options, force: true }),
+					shouldTriggerFileCompletion: () => true,
+					applyCompletion(lines, line, col, item, prefix) {
+						// The combined provider otherwise mistakes /name for a slash command.
+						if (prefix.startsWith("/") && !prefix.slice(1).includes("/")) {
+							const start = col - prefix.length;
+							const updated = [...lines];
+							updated[line] = lines[line].slice(0, start) + item.value + lines[line].slice(col);
+							const offset = item.label.endsWith("/") && item.value.endsWith('"') ? 1 : 0;
+							return { lines: updated, cursorLine: line, cursorCol: start + item.value.length - offset };
+						}
+						return provider.applyCompletion(lines, line, col, item, prefix);
+					},
+				});
+				// Handle submission ourselves so selecting an absolute path cannot submit the dialog.
+				editor.disableSubmit = true;
+				container.addChild(editor);
+				const hint = (action: Parameters<typeof keybindings.getKeys>[0], label: string) =>
+					`${keybindings.getKeys(action).join("/")} ${label}`;
+				container.addChild(new Text(theme.fg("dim", [
+					hint("tui.input.tab", "complete"),
+					...(fdPath ? ["@ search"] : []),
+					hint("tui.input.submit", "review"),
+					hint("tui.input.newLine", "newline"),
+					hint("tui.select.cancel", "back"),
+				].join(" • ")), 0, 0));
+
+				return {
+					get focused() { return editor.focused; },
+					set focused(value: boolean) { editor.focused = value; },
+					get capturesViewportInput() { return editor.capturesViewportInput; },
+					render: (width: number) => container.render(width),
+					invalidate: () => container.invalidate(),
+					// setText cancels any in-flight completion request when the dialog closes.
+					dispose: () => editor.setText(""),
+					handleInput(data: string) {
+						if (!editor.isShowingAutocomplete()) {
+							if (keybindings.matches(data, "tui.select.cancel")) {
+								done(undefined);
+								return;
+							}
+							if (keybindings.matches(data, "tui.input.submit")) {
+								done(editor.getExpandedText());
+								return;
+							}
+						}
+						editor.handleInput(data);
+						tui.requestRender();
+					},
+				};
+			}, { blocked: { kind: "question", message: title } });
+		}
 
 		if (!result?.trim()) return null;
-		const paths = parseReviewPaths(result);
+		const paths = normalizeReviewPaths(tokenizeArgs(result));
 		if (paths.length === 0) return null;
 
 		return { type: "folder", paths };
@@ -1596,7 +1677,7 @@ export default function reviewExtension(pi: ExtensionAPI) {
 
 
 			case "folder": {
-				const paths = parseReviewPaths(parts.slice(1).join(" "));
+				const paths = normalizeReviewPaths(parts.slice(1));
 				if (paths.length === 0) return { target: null, extraInstruction };
 				return { target: { type: "folder", paths }, extraInstruction };
 			}

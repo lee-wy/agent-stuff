@@ -3,33 +3,6 @@ import { existsSync, promises as fs } from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 
-const GHOSTTY_SPLIT_SCRIPT = `on run argv
-	set targetCwd to item 1 of argv
-	set startupInput to item 2 of argv
-	tell application "Ghostty"
-		set cfg to new surface configuration
-		set initial working directory of cfg to targetCwd
-		set initial input of cfg to startupInput
-		if (count of windows) > 0 then
-			try
-				set frontWindow to front window
-				set targetTerminal to focused terminal of selected tab of frontWindow
-				split targetTerminal direction right with configuration cfg
-			on error
-				new window with configuration cfg
-			end try
-		else
-			new window with configuration cfg
-		end if
-		activate
-	end tell
-end run`;
-
-function shellQuote(value: string): string {
-	if (value.length === 0) return "''";
-	return `'${value.replace(/'/g, `'"'"'`)}'`;
-}
-
 function getPiInvocationParts(): string[] {
 	const currentScript = process.argv[1];
 	if (currentScript && existsSync(currentScript)) {
@@ -45,7 +18,7 @@ function getPiInvocationParts(): string[] {
 	return ["pi"];
 }
 
-function buildPiStartupInput(sessionFile: string | undefined, prompt: string): string {
+function buildPiCommand(sessionFile: string | undefined, prompt: string): string[] {
 	const commandParts = [...getPiInvocationParts()];
 
 	if (sessionFile) {
@@ -56,7 +29,7 @@ function buildPiStartupInput(sessionFile: string | undefined, prompt: string): s
 		commandParts.push("--", prompt);
 	}
 
-	return `${commandParts.map(shellQuote).join(" ")}\n`;
+	return commandParts;
 }
 
 async function createForkedSession(ctx: ExtensionCommandContext): Promise<string | undefined> {
@@ -93,22 +66,40 @@ async function createForkedSession(ctx: ExtensionCommandContext): Promise<string
 
 export default function (pi: ExtensionAPI): void {
 	pi.registerCommand("split-fork", {
-		description: "Fork this session into a new pi process in a right-hand Ghostty split. Usage: /split-fork [optional prompt]",
+		description: "Fork this session into a new pi process in a right-hand Rex split. Usage: /split-fork [optional prompt]",
 		handler: async (args, ctx) => {
-			if (process.platform !== "darwin") {
-				ctx.ui.notify("/split-fork currently requires macOS (Ghostty AppleScript).", "warning");
+			let rexSession = process.env.REX_SESSION;
+			let rexBlock = process.env.REX_BLOCK;
+			try {
+				if (!rexSession || !rexBlock) {
+					const location = await pi.exec("rex", ["whoami", "--json"]);
+					if (location.code !== 0) {
+						throw new Error(location.stderr?.trim() || location.stdout?.trim() || "rex whoami failed");
+					}
+					const identity = JSON.parse(location.stdout);
+					rexSession ||= identity.session_id;
+					rexBlock ||= identity.block_id;
+				}
+			} catch (error) {
+				ctx.ui.notify(`Failed to locate Rex pane: ${error instanceof Error ? error.message : String(error)}`, "error");
+				return;
+			}
+			if (!rexSession || !rexBlock) {
+				ctx.ui.notify("/split-fork requires a Rex session and terminal pane. Run pi inside Rex.", "warning");
 				return;
 			}
 
 			const wasBusy = !ctx.isIdle();
 			const prompt = args.trim();
 			const forkedSessionFile = await createForkedSession(ctx);
-			const startupInput = buildPiStartupInput(forkedSessionFile, prompt);
+			const command = buildPiCommand(forkedSessionFile, prompt);
 
-			const result = await pi.exec("osascript", ["-e", GHOSTTY_SPLIT_SCRIPT, "--", ctx.cwd, startupInput]);
+			const result = await pi.exec("rex", [
+				"split", "-s", rexSession, "-b", rexBlock, "--split=right", "-c", ctx.cwd, "--", ...command,
+			]);
 			if (result.code !== 0) {
-				const reason = result.stderr?.trim() || result.stdout?.trim() || "unknown osascript error";
-				ctx.ui.notify(`Failed to launch Ghostty split: ${reason}`, "error");
+				const reason = result.stderr?.trim() || result.stdout?.trim() || "unknown rex error";
+				ctx.ui.notify(`Failed to launch Rex split: ${reason}`, "error");
 				if (forkedSessionFile) {
 					ctx.ui.notify(`Forked session was created: ${forkedSessionFile}`, "info");
 				}
@@ -118,12 +109,12 @@ export default function (pi: ExtensionAPI): void {
 			if (forkedSessionFile) {
 				const fileName = path.basename(forkedSessionFile);
 				const suffix = prompt ? " and sent prompt" : "";
-				ctx.ui.notify(`Forked to ${fileName} in a new Ghostty split${suffix}.`, "info");
+				ctx.ui.notify(`Forked to ${fileName} in a new Rex split${suffix}.`, "info");
 				if (wasBusy) {
 					ctx.ui.notify("Forked from current committed state (in-flight turn continues in original session).", "info");
 				}
 			} else {
-				ctx.ui.notify("Opened a new Ghostty split (no persisted session to fork).", "warning");
+				ctx.ui.notify("Opened a new Rex split (no persisted session to fork).", "warning");
 			}
 		},
 	});
